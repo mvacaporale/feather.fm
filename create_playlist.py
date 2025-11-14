@@ -5,9 +5,9 @@ import requests
 import base64
 import webbrowser
 import urllib.parse
-import json
+import time
 from dotenv import load_dotenv
-from typing import List, Optional
+from typing import List
 
 load_dotenv()
 
@@ -16,14 +16,92 @@ class SpotifyPlaylistCreator:
         self.client_id = os.getenv('SPOTIFY_CLIENT_ID')
         self.client_secret = os.getenv('SPOTIFY_CLIENT_SECRET')
         self.redirect_uri = os.getenv('SPOTIFY_REDIRECT_URI', 'http://localhost:8888/callback')
-        self.access_token = None
+        self.access_token = os.getenv('SPOTIFY_ACCESS_TOKEN')
+        self.refresh_token = os.getenv('SPOTIFY_REFRESH_TOKEN')
+        self.token_expires_at = None
         self.user_id = None
         
         if not self.client_id or not self.client_secret:
             raise ValueError("SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET must be set in environment variables")
+        
+        # Parse token expiry from environment if available
+        token_expires_str = os.getenv('SPOTIFY_TOKEN_EXPIRES_AT')
+        if token_expires_str:
+            try:
+                self.token_expires_at = float(token_expires_str)
+            except ValueError:
+                self.token_expires_at = None
+    
+    def print_tokens_for_env(self):
+        """Print tokens in a format ready to add to environment variables"""
+        if not self.access_token:
+            print("No tokens available to save")
+            return
+        
+        print("\n" + "="*60)
+        print("ADD THESE TO YOUR ENVIRONMENT VARIABLES:")
+        print("="*60)
+        print(f"export SPOTIFY_ACCESS_TOKEN='{self.access_token}'")
+        if self.refresh_token:
+            print(f"export SPOTIFY_REFRESH_TOKEN='{self.refresh_token}'")
+        if self.token_expires_at:
+            print(f"export SPOTIFY_TOKEN_EXPIRES_AT='{self.token_expires_at}'")
+        print("="*60)
+        print("\nAdd these lines to your ~/.zshrc, ~/.bashrc, or .env file")
+        print("Then restart your terminal or run 'source ~/.zshrc' to reload")
+        print("="*60)
+    
+    def refresh_access_token(self):
+        """Refresh access token using refresh token"""
+        if not self.refresh_token:
+            return False
+        
+        token_url = 'https://accounts.spotify.com/api/token'
+        auth_header = base64.b64encode(f"{self.client_id}:{self.client_secret}".encode()).decode()
+        
+        headers = {
+            'Authorization': f'Basic {auth_header}',
+            'Content-Type': 'application/x-www-form-urlencoded'
+        }
+        
+        data = {
+            'grant_type': 'refresh_token',
+            'refresh_token': self.refresh_token
+        }
+        
+        try:
+            response = requests.post(token_url, headers=headers, data=data)
+            response.raise_for_status()
+            
+            token_data = response.json()
+            self.access_token = token_data['access_token']
+            
+            # Update expiry time (tokens typically last 1 hour)
+            self.token_expires_at = time.time() + token_data.get('expires_in', 3600)
+            
+            # Refresh token might be updated
+            if 'refresh_token' in token_data:
+                self.refresh_token = token_data['refresh_token']
+            
+            # Print new tokens for user to save
+            self.print_tokens_for_env()
+            print("\n✅ Access token refreshed successfully")
+            print("⚠️  Please update your environment variables with the new tokens above")
+            return True
+            
+        except Exception as e:
+            print(f"Failed to refresh token: {e}")
+            return False
     
     def get_user_access_token(self):
         """Get access token using authorization code flow with playlist creation permissions"""
+        # Check if we already have a valid token
+        if self.access_token and self.token_expires_at:
+            if time.time() < self.token_expires_at:
+                return self.access_token
+            elif self.refresh_token and self.refresh_access_token():
+                return self.access_token
+        
         # Generate authorization URL with necessary scopes
         scope = 'playlist-modify-public playlist-modify-private'
         auth_params = {
@@ -63,6 +141,14 @@ class SpotifyPlaylistCreator:
         
         token_data = response.json()
         self.access_token = token_data['access_token']
+        self.refresh_token = token_data.get('refresh_token')
+        
+        # Set expiry time (tokens typically last 1 hour)
+        self.token_expires_at = time.time() + token_data.get('expires_in', 3600)
+        
+        # Print tokens for user to save manually
+        self.print_tokens_for_env()
+        
         return self.access_token
     
     def get_current_user(self):
@@ -76,6 +162,17 @@ class SpotifyPlaylistCreator:
         }
         
         response = requests.get(url, headers=headers)
+        
+        # If token is invalid, try to refresh or re-authenticate
+        if response.status_code == 401:
+            if self.refresh_token and self.refresh_access_token():
+                headers['Authorization'] = f'Bearer {self.access_token}'
+                response = requests.get(url, headers=headers)
+            else:
+                self.get_user_access_token()
+                headers['Authorization'] = f'Bearer {self.access_token}'
+                response = requests.get(url, headers=headers)
+        
         response.raise_for_status()
         
         user_data = response.json()
