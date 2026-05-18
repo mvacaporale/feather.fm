@@ -27,7 +27,7 @@ There's also a minimal Node.js component that uses `spotify-preview-finder` for 
 
 ## Environment Variables
 
-All required API keys are stored in `~/.zshrc`:
+All required API keys are stored in Proton Pass (`Agent Passwords` vault):
 - `SPOTIFY_CLIENT_ID` - Required for Spotify API
 - `SPOTIFY_CLIENT_SECRET` - Required for Spotify API 
 - `SPOTIFY_ACCESS_TOKEN` - Generated after first authentication
